@@ -29,6 +29,15 @@ gitlab:
 	@echo "==> Installing GitLab server"
 	cd ansible && ansible-playbook -i inventory.ini gitlab.yaml
 
+gitlab-bootstrap:
+	@echo "==> Bootstrapping GitLab projects and token"
+	cd ansible && ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
+
+push-gitlab:
+	@echo "Usage: make push-gitlab GITLAB_IP=<ip> GITLAB_TOKEN=<token>"
+	@test -n "$(GITLAB_IP)" && test -n "$(GITLAB_TOKEN)"
+	./scripts/bootstrap_gitlab.sh $(GITLAB_IP) $(GITLAB_TOKEN)
+
 cluster:
 	@echo "==> Building Kubernetes cluster"
 	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini k8s-cluster.yml

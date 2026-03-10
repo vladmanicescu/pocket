@@ -1,0 +1,149 @@
+---
+- name: Bootstrap GitLab (admin, token, projects)
+  hosts: gitlab
+  become: true
+  gather_facts: true
+
+  vars:
+    gitlab_url: "http://{{ hostvars[inventory_hostname].ansible_host }}"
+    gitlab_admin_username: "root"
+    gitlab_admin_password: "V9#qT7!mL2@xP4$zR8"
+    gitlab_pat_name: "bootstrap-token"
+
+    gitlab_projects:
+      - python-auth-app
+      - python-auth-k8s
+
+  tasks:
+
+    - name: Wait for GitLab sign-in page
+      uri:
+        url: "{{ gitlab_url }}/users/sign_in"
+        method: GET
+        status_code: 200
+      register: gitlab_up
+      retries: 30
+      delay: 10
+      until: gitlab_up.status == 200
+
+
+    - name: Check GitLab user count
+      shell: |
+        sudo gitlab-rails runner "puts User.count"
+      register: gitlab_user_count
+      changed_when: false
+
+
+    - name: Fail if GitLab has no users
+      fail:
+        msg: "GitLab database has no users. Installation is inconsistent."
+      when: gitlab_user_count.stdout | trim == "0"
+
+
+    - name: Wait until root user exists
+      shell: |
+        sudo gitlab-rails runner "
+        u = User.find_by(username: '{{ gitlab_admin_username }}')
+        puts(u ? 'READY' : 'NOT_READY')
+        "
+      register: gitlab_root_check
+      retries: 20
+      delay: 10
+      until: gitlab_root_check.stdout | trim == "READY"
+      changed_when: false
+
+
+    - name: Promote root to admin and reset password
+      shell: |
+        sudo gitlab-rails runner "
+        u = User.find_by(username: '{{ gitlab_admin_username }}')
+        raise 'root user not found' unless u
+
+        u.admin = true
+        u.password = '{{ gitlab_admin_password }}'
+        u.password_confirmation = '{{ gitlab_admin_password }}'
+
+        u.confirmed_at = Time.now if u.respond_to?(:confirmed_at) && u.confirmed_at.nil?
+
+        u.save!(validate: false)
+        u.reload
+
+        raise 'root is not admin after save' unless u.admin?
+
+        puts({id: u.id, username: u.username, admin: u.admin}.inspect)
+        "
+      register: gitlab_root_fix
+      changed_when: false
+
+
+    - name: Create fresh bootstrap token
+      shell: |
+        sudo gitlab-rails runner "
+        u = User.find_by(username: '{{ gitlab_admin_username }}')
+        raise 'root user not found' unless u
+
+        existing = PersonalAccessToken.find_by(name: '{{ gitlab_pat_name }}', user_id: u.id)
+        existing.destroy! if existing
+
+        t = u.personal_access_tokens.create!(
+          name: '{{ gitlab_pat_name }}',
+          scopes: [:api, :read_repository, :write_repository],
+          expires_at: 365.days.from_now
+        )
+
+        plain = SecureRandom.hex(20)
+
+        t.set_token(plain)
+        t.save!
+
+        puts plain
+        "
+      register: gitlab_pat_create
+      changed_when: false
+
+
+    - name: Save bootstrap token
+      set_fact:
+        gitlab_bootstrap_token: "{{ gitlab_pat_create.stdout | trim }}"
+
+
+    - name: Get existing GitLab projects
+      uri:
+        url: "{{ gitlab_url }}/api/v4/projects?simple=true&per_page=100"
+        method: GET
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_bootstrap_token }}"
+        return_content: true
+        status_code: 200
+      register: gitlab_existing_projects
+
+
+    - name: Create GitLab projects if missing
+      uri:
+        url: "{{ gitlab_url }}/api/v4/projects"
+        method: POST
+        headers:
+          PRIVATE-TOKEN: "{{ gitlab_bootstrap_token }}"
+        body_format: form-urlencoded
+        body:
+          name: "{{ item }}"
+          visibility: private
+          initialize_with_readme: false
+        status_code: 201
+      loop: "{{ gitlab_projects }}"
+      when: >
+        item not in (
+          gitlab_existing_projects.json
+          | map(attribute='name')
+          | list
+        )
+
+
+    - name: Print bootstrap info
+      debug:
+        msg:
+          - "GitLab URL: {{ gitlab_url }}"
+          - "GitLab admin username: {{ gitlab_admin_username }}"
+          - "GitLab admin password: {{ gitlab_admin_password }}"
+          - "GitLab bootstrap token: {{ gitlab_bootstrap_token }}"
+          - "Projects ensured: {{ gitlab_projects | join(', ') }}"

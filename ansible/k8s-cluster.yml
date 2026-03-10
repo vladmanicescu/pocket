@@ -1,0 +1,457 @@
+---
+- name: Prepare all nodes for Kubernetes
+  hosts: k8s
+  become: true
+  gather_facts: true
+
+  vars:
+    kubernetes_version: "1.33"
+
+  tasks:
+    - name: Disable swap immediately
+      command: swapoff -a
+      changed_when: false
+
+    - name: Disable swap in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^(.*swap.*)$'
+        replace: '# \1'
+
+    - name: Load overlay kernel module
+      community.general.modprobe:
+        name: overlay
+        state: present
+
+    - name: Load br_netfilter kernel module
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Persist required kernel modules
+      copy:
+        dest: /etc/modules-load.d/k8s.conf
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Configure sysctl for Kubernetes networking
+      copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        mode: "0644"
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+
+    - name: Apply sysctl settings
+      command: sysctl --system
+      changed_when: false
+
+    - name: Install containerd and helper packages
+      dnf:
+        name:
+          - containerd
+          - iproute-tc
+        state: present
+        update_cache: true
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: "0755"
+
+    - name: Generate default containerd config
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Enable SystemdCgroup in containerd
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: Restart containerd
+
+    - name: Ensure containerd is enabled and started
+      systemd:
+        name: containerd
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Add Kubernetes repo
+      copy:
+        dest: /etc/yum.repos.d/kubernetes.repo
+        mode: "0644"
+        content: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/rpm/repodata/repomd.xml.key
+
+    - name: Install kubelet, kubeadm and kubectl
+      dnf:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+        disable_excludes: all
+
+    - name: Ensure kubelet is enabled
+      systemd:
+        name: kubelet
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Restart containerd
+      service:
+        name: containerd
+        state: restarted
+
+- name: Initialize Kubernetes control plane
+  hosts: k8s-cp1
+  become: true
+  gather_facts: true
+
+  vars:
+    kubernetes_full_version: "1.33.0"
+    service_subnet: "10.20.160.0/16"
+    pod_subnet: "192.120.0.0/16"
+    cluster_name: "kube-dev"
+
+  tasks:
+    - name: Reset kubeadm state on control plane
+      command: kubeadm reset -f
+      changed_when: false
+      failed_when: false
+
+    - name: Remove old Kubernetes directories on control plane
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes/manifests
+        - /var/lib/etcd
+      failed_when: false
+
+    - name: Write kubeadm config
+      copy:
+        dest: /root/kubeadm-config.yaml
+        mode: "0600"
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: InitConfiguration
+          nodeRegistration:
+            criSocket: unix:///run/containerd/containerd.sock
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: ClusterConfiguration
+          kubernetesVersion: v{{ kubernetes_full_version }}
+          clusterName: {{ cluster_name }}
+          networking:
+            serviceSubnet: {{ service_subnet }}
+            podSubnet: {{ pod_subnet }}
+          ---
+          apiVersion: kubeproxy.config.k8s.io/v1alpha1
+          kind: KubeProxyConfiguration
+          mode: "iptables"
+
+    - name: Initialize Kubernetes control plane
+      command: kubeadm init --config /root/kubeadm-config.yaml --ignore-preflight-errors=Mem
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Create kubeconfig directory for root
+      file:
+        path: /root/.kube
+        state: directory
+        mode: "0700"
+
+    - name: Copy admin kubeconfig for root
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: true
+        mode: "0600"
+
+    - name: Create kubeconfig directory for adm
+      file:
+        path: /home/adm/.kube
+        state: directory
+        owner: adm
+        group: adm
+        mode: "0700"
+
+    - name: Copy admin kubeconfig for adm
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/adm/.kube/config
+        remote_src: true
+        owner: adm
+        group: adm
+        mode: "0600"
+
+    - name: Generate join command
+      command: kubeadm token create --print-join-command
+      register: join_cmd
+      changed_when: false
+
+    - name: Save join command on control plane
+      copy:
+        dest: /tmp/kubeadm_join_cmd.sh
+        mode: "0700"
+        content: |
+          {{ join_cmd.stdout }} --cri-socket unix:///run/containerd/containerd.sock
+
+- name: Join worker nodes
+  hosts: k8s:!k8s-cp1
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Reset kubeadm state on worker
+      command: kubeadm reset -f
+      changed_when: false
+      failed_when: false
+
+    - name: Remove old worker kubeadm files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes/kubelet.conf
+        - /etc/kubernetes/bootstrap-kubelet.conf
+        - /var/lib/kubelet/config.yaml
+      failed_when: false
+
+    - name: Copy join command from control plane
+      delegate_to: k8s-cp1
+      slurp:
+        src: /tmp/kubeadm_join_cmd.sh
+      register: join_script_raw
+      run_once: true
+
+    - name: Save join script on worker
+      copy:
+        dest: /tmp/kubeadm_join_cmd.sh
+        mode: "0700"
+        content: "{{ join_script_raw.content | b64decode }}"
+
+    - name: Join worker to cluster
+      command: bash /tmp/kubeadm_join_cmd.sh
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+
+- name: Wait for all nodes to register
+  hosts: k8s-cp1
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait until all three nodes are registered
+      command: kubectl get nodes --no-headers
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: joined_nodes
+      until: joined_nodes.stdout_lines | length >= 3
+      retries: 20
+      delay: 15
+      changed_when: false
+
+- name: Install Cilium and ingress
+  hosts: k8s-cp1
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Install Cilium CLI
+      shell: |
+        set -euo pipefail
+        CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+        CLI_ARCH=amd64
+        if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
+        curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
+        sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+        tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
+        rm -f cilium-linux-${CLI_ARCH}.tar.gz cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
+      args:
+        creates: /usr/local/bin/cilium
+
+    - name: Install Cilium CNI
+      command: >
+        cilium install
+        --set ipam.mode=kubernetes
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Wait for Cilium daemonset rollout
+      command: kubectl -n kube-system rollout status daemonset/cilium --timeout=600s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Wait for Cilium Envoy daemonset rollout
+      command: kubectl -n kube-system rollout status daemonset/cilium-envoy --timeout=600s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for Cilium operator rollout
+      command: kubectl -n kube-system rollout status deployment/cilium-operator --timeout=600s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Wait until all nodes become Ready after Cilium
+      command: kubectl get nodes --no-headers
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ready_nodes_after_cilium
+      until: >
+        (ready_nodes_after_cilium.stdout_lines | select('search', ' Ready ') | list | length) >= 3
+      retries: 20
+      delay: 15
+      changed_when: false
+
+    - name: Remove old ingress-nginx namespace if present
+      command: kubectl delete namespace ingress-nginx --ignore-not-found=true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Wait for ingress-nginx namespace deletion
+      command: kubectl get namespace ingress-nginx
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_ns_check
+      until: ingress_ns_check.rc != 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+
+    - name: Install official ingress-nginx manifest
+      command: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/baremetal/deploy.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+
+    - name: Remove admission webhook jobs
+      command: kubectl -n ingress-nginx delete job ingress-nginx-admission-create ingress-nginx-admission-patch --ignore-not-found=true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Remove validating webhook configuration
+      command: kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found=true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Patch ingress controller to remove validating webhook args
+      shell: |
+        kubectl -n ingress-nginx patch deployment ingress-nginx-controller \
+          --type='json' \
+          -p='[
+            {"op":"remove","path":"/spec/template/spec/containers/0/args/7"},
+            {"op":"remove","path":"/spec/template/spec/containers/0/args/6"},
+            {"op":"remove","path":"/spec/template/spec/containers/0/args/5"}
+          ]'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Patch ingress controller to remove webhook volume mount
+      shell: |
+        kubectl -n ingress-nginx patch deployment ingress-nginx-controller \
+          --type='json' \
+          -p='[
+            {"op":"remove","path":"/spec/template/spec/containers/0/volumeMounts/0"}
+          ]'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Patch ingress controller to remove webhook volume
+      shell: |
+        kubectl -n ingress-nginx patch deployment ingress-nginx-controller \
+          --type='json' \
+          -p='[
+            {"op":"remove","path":"/spec/template/spec/volumes/0"}
+          ]'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Patch ingress service to NodePort
+      shell: |
+        kubectl -n ingress-nginx patch svc ingress-nginx-controller \
+          --type merge \
+          -p '{"spec":{"type":"NodePort"}}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: true
+      failed_when: false
+
+    - name: Wait for ingress-nginx controller deployment
+      command: kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=600s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+- name: Validate cluster
+  hosts: k8s-cp1
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Show cluster nodes
+      command: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: final_nodes
+      changed_when: false
+
+    - name: Show all pods
+      command: kubectl get pods -A -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: final_pods
+      changed_when: false
+
+    - name: Show ingress service
+      command: kubectl -n ingress-nginx get svc
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_svc
+      changed_when: false
+
+    - name: Print nodes
+      debug:
+        var: final_nodes.stdout_lines
+
+    - name: Print pods
+      debug:
+        var: final_pods.stdout_lines
+
+    - name: Print ingress service
+      debug:
+        var: ingress_svc.stdout_lines

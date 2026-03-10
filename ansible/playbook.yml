@@ -1,0 +1,175 @@
+---
+- name: Configure Kubernetes nodes
+  hosts: k8s
+  become: true
+  gather_facts: true
+
+  vars:
+    adm_user: adm
+    private_key_path: "../terraform/k8s-assignment-key.pem"
+
+  pre_tasks:
+    - name: Install required packages
+      dnf:
+        name:
+          - parted
+          - e2fsprogs
+          - util-linux
+        state: present
+        update_cache: true
+
+    - name: Update all packages
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: true
+
+  tasks:
+    - name: Create adm user
+      user:
+        name: "{{ adm_user }}"
+        shell: /bin/bash
+        groups: wheel
+        append: true
+        create_home: true
+        state: present
+
+    - name: Create .ssh directory for adm
+      file:
+        path: "/home/{{ adm_user }}/.ssh"
+        state: directory
+        owner: "{{ adm_user }}"
+        group: "{{ adm_user }}"
+        mode: "0700"
+
+    - name: Add SSH public key for adm
+      authorized_key:
+        user: "{{ adm_user }}"
+        state: present
+        key: "{{ lookup('pipe', 'ssh-keygen -y -f ' ~ private_key_path) }}"
+
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        backup: true
+      notify: Restart sshd
+
+    - name: Enable SSH public key authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+      notify: Restart sshd
+
+    - name: Disable challenge response authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+      notify: Restart sshd
+
+    - name: Configure /etc/hosts with all nodes
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE K8S HOSTS"
+        block: |
+          {% for host in groups['k8s'] %}
+          {{ hostvars[host]['ansible_default_ipv4']['address'] }} {{ host }}
+          {% endfor %}
+
+    - name: List block devices
+      command: lsblk -dn -o NAME,TYPE
+      register: lsblk_output
+      changed_when: false
+
+    - name: Detect extra disk
+      set_fact:
+        extra_disk: >-
+          {{
+            (
+              lsblk_output.stdout_lines
+              | map('split', ' ')
+              | selectattr('1', 'equalto', 'disk')
+              | map('first')
+              | reject('equalto', 'xvda')
+              | reject('equalto', 'nvme0n1')
+              | list
+              | first
+            )
+          }}
+
+    - name: Fail if extra disk is missing
+      fail:
+        msg: "No extra disk detected on host {{ inventory_hostname }}"
+      when: extra_disk is not defined or extra_disk | length == 0
+
+    - name: Create first partition on GPT disk
+      community.general.parted:
+        device: "/dev/{{ extra_disk }}"
+        label: gpt
+        number: 1
+        name: data1
+        state: present
+        part_start: "1MiB"
+        part_end: "50%"
+        fs_type: ext4
+
+    - name: Create second partition on GPT disk
+      community.general.parted:
+        device: "/dev/{{ extra_disk }}"
+        label: gpt
+        number: 2
+        name: data2
+        state: present
+        part_start: "50%"
+        part_end: "100%"
+        fs_type: ext4
+
+    - name: Determine partition prefix
+      set_fact:
+        part_prefix: "{{ '/dev/' ~ extra_disk ~ ('p' if extra_disk is match('^nvme') else '') }}"
+
+    - name: Create filesystem on first partition
+      filesystem:
+        fstype: ext4
+        dev: "{{ part_prefix }}1"
+
+    - name: Create filesystem on second partition
+      filesystem:
+        fstype: ext4
+        dev: "{{ part_prefix }}2"
+
+    - name: Create /mnt/data directory
+      file:
+        path: /mnt/data
+        state: directory
+        mode: "0755"
+
+    - name: Create /var/www/data-share directory
+      file:
+        path: /var/www/data-share
+        state: directory
+        mode: "0755"
+        recurse: true
+
+    - name: Mount first partition on /mnt/data
+      mount:
+        path: /mnt/data
+        src: "{{ part_prefix }}1"
+        fstype: ext4
+        state: mounted
+
+    - name: Mount second partition on /var/www/data-share
+      mount:
+        path: /var/www/data-share
+        src: "{{ part_prefix }}2"
+        fstype: ext4
+        state: mounted
+
+  handlers:
+    - name: Restart sshd
+      service:
+        name: sshd
+        state: restarted
