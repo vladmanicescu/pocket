@@ -1,491 +1,290 @@
-# devops_assignment
-# Create the README.md file for the user to download
 
-import pypandoc
 
-text = r"""
-# DevOps Assignment – End-to-End Setup
 
-## Overview
 
-Acest proiect configurează complet infrastructura și pipeline-ul DevOps:
+# Makefile Targets Documentation
 
-- Terraform – infrastructură AWS
-- Kubernetes – cluster pentru aplicație
-- NFS dynamic storage provisioner
-- GitLab self-hosted
-- GitLab Runner (shell executor)
-- Docker build & push
-- GitLab Container Registry
-- Helm chart pentru deployment
-- posibil ArgoCD GitOps deployment
+This document explains the available `make` targets used to provision infrastructure, configure systems, and manage the Kubernetes environment.
+
+The automation stack uses:
+
+- Terraform → infrastructure provisioning
+- Ansible → configuration management
+- Helm → Kubernetes storage provisioning
+- GitLab → CI/CD platform
 
 ---
 
-# 1. Provision Infrastructure
+# Directory Structure
 
-Initializează Terraform:
+The Makefile uses the following directories:
 
-```bash
-terraform init
-terraform plan
-terraform apply
-```
+| Variable | Path | Description |
+|--------|--------|--------|
+| TERRAFORM_DIR | terraform/ | Terraform infrastructure code |
+| ANSIBLE_DIR | ansible/ | Ansible playbooks and inventory |
 
-Outputuri utile:
+Important files:
 
-- Kubernetes control plane IP
-- GitLab server IP
-- SSH private key
-
----
-
-# 2. Install Kubernetes Storage (NFS)
-
-Adaugă Helm repo:
-
-```bash
-helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
-helm repo update
-```
-
-## values.yaml
-
-```yaml
-nfs:
-  server: <NFS_SERVER_IP>
-  path: /srv/nfs/kubedata
-
-storageClass:
-  create: true
-  name: nfs-client
-  defaultClass: false
-  reclaimPolicy: Retain
-  allowVolumeExpansion: true
-
-rbac:
-  create: true
-```
-
-Install provisioner:
-
-```bash
-helm install nfs-client \
-  nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-  -f values.yaml \
-  --namespace nfs-provisioner \
-  --create-namespace
-```
-
-Verificare:
-
-```bash
-kubectl get pods -n nfs-provisioner
-kubectl get storageclass
-```
+| Variable | File |
+|--------|--------|
+| INVENTORY | ansible/inventory.ini |
+| CONFIG_PLAYBOOK | ansible/playbook.yml |
+| NFS_PLAYBOOK | ansible/nfs.yaml |
+| CLUSTER_PLAYBOOK | ansible/k8s-cluster.yml |
 
 ---
 
-# 3. Install GitLab Server
+# Infrastructure Targets
 
-GitLab a fost instalat pe un EC2 folosind Ansible.
+## make infra
 
-```bash
-ansible-playbook -i inventory.ini gitlab.yaml
-```
+Provisions infrastructure using Terraform.
 
-Verificare:
+Steps executed:
 
-```bash
-sudo gitlab-ctl status
-curl http://localhost
-```
+1. Initializes Terraform
+2. Applies the Terraform plan automatically
 
----
+Commands:
 
-# 4. Fix GitLab Root Access
-
-Reset password:
-
-```bash
-sudo gitlab-rake "gitlab:password:reset[root]"
-```
+cd terraform && terraform init  
+cd terraform && terraform apply -auto-approve
 
 ---
 
-# 5. Create GitLab Projects
+## make destroy
 
-```bash
-ansible-playbook gitlab-bootstrap.yaml
-```
+Destroys all Terraform-managed infrastructure.
 
-Proiecte create:
+Command:
 
-- python-auth-app
-- python-auth-k8s
+cd terraform && terraform destroy -auto-approve
 
 ---
 
-# 6. Push Local Repositories
+## make fmt
 
-```bash
-make push-gitlab GITLAB_IP=3.67.91.250 GITLAB_TOKEN=<TOKEN>
-```
+Formats Terraform code according to standard conventions.
 
----
+Command:
 
-# 7. Install GitLab Runner
-
-```bash
-sudo dnf install gitlab-runner -y
-sudo systemctl enable --now gitlab-runner
-```
-
-Register runner:
-
-```bash
-sudo gitlab-runner register \
-  --url http://3.67.91.250 \
-  --executor shell \
-  --token <RUNNER_TOKEN>
-```
+cd terraform && terraform fmt
 
 ---
 
-# 8. Install Docker
+## make validate
 
-```bash
-sudo dnf install docker -y
-sudo systemctl enable --now docker
-sudo usermod -aG docker gitlab-runner
-sudo systemctl restart gitlab-runner
-```
+Validates Terraform configuration syntax.
 
----
+Command:
 
-# 9. Configure Docker Registry
-
-Edit:
-
-```
-/etc/docker/daemon.json
-```
-
-```json
-{
-  "insecure-registries": ["3.67.91.250:5050"]
-}
-```
-
-Restart Docker:
-
-```bash
-sudo systemctl restart docker
-```
+cd terraform && terraform validate
 
 ---
 
-# 10. Fix GitLab CI Job Token
+# Configuration Targets
 
-```bash
-sudo gitlab-rails runner 'key = OpenSSL::PKey::RSA.new(2048).to_pem; s = ApplicationSetting.current; s.ci_job_token_signing_key = key; s.save!'
-```
+## make config
 
-Restart GitLab:
+Configures Kubernetes nodes using Ansible.
 
-```bash
-sudo gitlab-ctl restart
-```
+Command:
 
----
+cd ansible && ansible-playbook -i inventory.ini playbook.yml
 
-# 11. Application Code
+Typical tasks include:
 
-## app.py
-
-```python
-from flask import Flask
-app = Flask(__name__)
-
-@app.route("/")
-def index():
-    return "Hello DevOps!"
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
-```
-
-requirements.txt
-
-```
-Flask
-gunicorn
-psycopg2-binary
-```
+- Installing container runtime
+- Installing Kubernetes dependencies
+- Preparing nodes for cluster creation
 
 ---
 
-# 12. Dockerfile
+## make nfs
 
-```dockerfile
-FROM python:3.11-slim
+Configures the NFS server used for shared Kubernetes storage.
 
-WORKDIR /app
+Command:
 
-COPY requirements.txt .
-
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 5000
-
-CMD ["python", "app.py"]
-```
+cd ansible && ansible-playbook -i inventory.ini nfs.yaml
 
 ---
 
-# 13. GitLab CI Pipeline
+## make storage
 
-.gitlab-ci.yml
+Installs a Kubernetes NFS dynamic storage provisioner using Helm.
 
-```yaml
-stages:
-  - build
+Command:
 
-build:
-  stage: build
-  script:
-    - docker login http://3.67.91.250:5050 -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD
-    - docker build -t 3.67.91.250:5050/root/python-auth-app:$CI_COMMIT_SHORT_SHA .
-    - docker push 3.67.91.250:5050/root/python-auth-app:$CI_COMMIT_SHORT_SHA
-```
+cd ansible && ansible-playbook -i inventory.ini nfs-provisioner.yaml
+
+This creates a StorageClass that allows Kubernetes to dynamically provision volumes backed by NFS.
 
 ---
 
-# 14. Helm Chart
+## make cluster
 
-Chart.yaml
+Creates the Kubernetes cluster.
 
-```yaml
-apiVersion: v2
-name: python-auth-app
-version: 0.1.0
-```
+Command:
 
-values.yaml
+cd ansible && ansible-playbook -i inventory.ini k8s-cluster.yml
 
-```yaml
-image:
-  repository: 3.67.91.250:5050/root/python-auth-app
-  tag: latest
-```
+Typical actions:
+
+- Initialize control plane
+- Join worker nodes
+- Configure cluster networking
 
 ---
 
-# 15. Deploy with Helm
+# GitLab Targets
 
-```bash
-helm install auth-app app/python-auth-k8s
-```
+## make gitlab
 
-Verify:
+Installs a GitLab server using Ansible.
 
-```bash
-kubectl get pods
-kubectl get svc
-```
+Command:
+
+cd ansible && ansible-playbook -i inventory.ini gitlab.yaml
 
 ---
 
-# 16. Optional: ArgoCD
+## make gitlab-bootstrap
 
-Install:
+Bootstraps GitLab after installation.
 
-```bash
-kubectl create namespace argocd
+Command:
 
-kubectl apply -n argocd \
-https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-```
+cd ansible && ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
 
-Port-forward:
+Typical actions:
 
-```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-```
+- Create GitLab projects
+- Configure API tokens
+- Prepare repositories for CI/CD
 
 ---
 
-# CI/CD Flow
+## make push-gitlab
 
-```
-git push
-   ↓
-GitLab CI
-   ↓
-Docker build
-   ↓
-GitLab Registry
-   ↓
-Helm
-   ↓
-Kubernetes
-```
-"""
+Pushes local repositories to GitLab using a bootstrap script.
 
-### Provision infrastructure
+Required variables:
 
-Create the infrastructure using Terraform:
+- GITLAB_IP
+- GITLAB_TOKEN
 
-```bash
-make infra
-```
+Usage:
 
-This will typically run:
+make push-gitlab GITLAB_IP=<ip> GITLAB_TOKEN=<token>
 
-```bash
-terraform init
-terraform plan
-terraform apply
-```
+Script executed:
+
+./scripts/bootstrap_gitlab.sh <GITLAB_IP> <GITLAB_TOKEN>
 
 ---
 
-### Configure Kubernetes access
+# Combined Targets
 
-Configure access to the Kubernetes cluster:
+## make config-infra
 
-```bash
-make kubeconfig
-```
+Runs both infrastructure provisioning and node configuration.
 
----
+Equivalent to:
 
-### Install NFS dynamic storage
-
-Install the Kubernetes NFS provisioner:
-
-```bash
-make install-nfs
-```
-
-Verify installation:
-
-```bash
-kubectl get storageclass
-kubectl get pods -n nfs-provisioner
-```
+make infra  
+make config
 
 ---
 
-### Install GitLab
+## make all-k8s
 
-Install and configure the GitLab server:
+Runs the complete Kubernetes setup pipeline.
 
-```bash
-make install-gitlab
-```
+Equivalent to:
 
-This runs the Ansible playbook responsible for:
+make infra  
+make config  
+make nfs  
+make cluster
 
-- installing GitLab
-- configuring the container registry
-- setting up the root account
+This target:
 
----
-
-### Bootstrap GitLab
-
-Bootstrap GitLab by creating required resources:
-
-```bash
-make bootstrap-gitlab
-```
-
-This step:
-
-- ensures the `root` user exists
-- creates a Personal Access Token
-- creates required GitLab projects
+1. Provisions infrastructure
+2. Configures nodes
+3. Installs NFS server
+4. Builds the Kubernetes cluster
 
 ---
 
-### Push repositories to GitLab
+# Connectivity Tests
 
-Push the application and Helm chart repositories to GitLab:
+## make test
 
-```bash
-make push-gitlab GITLAB_IP=<gitlab-ip> GITLAB_TOKEN=<token>
-```
+Tests connectivity to Kubernetes nodes using Ansible ping.
 
-Example:
+Command:
 
-```bash
-make push-gitlab GITLAB_IP=3.67.91.250 GITLAB_TOKEN=glpat-xxxx
-```
-
-This command pushes:
-
-- `python-auth-app`
-- `python-auth-k8s`
-
-to the GitLab instance.
+cd ansible && ansible -i inventory.ini k8s -m ping
 
 ---
 
-### Build and push Docker image
+## make test-nfs
 
-The Docker image is built and pushed automatically through the GitLab CI pipeline when code is pushed.
+Tests connectivity to the NFS host.
 
-Pipeline steps:
+Command:
 
-```
-git push
-   ↓
-GitLab CI
-   ↓
-Docker build
-   ↓
-Push image to GitLab Container Registry
-```
+cd ansible && ansible -i inventory.ini nfs -m ping
 
 ---
 
-### Deploy application to Kubernetes
+## make test-gitlab
 
-Deploy the application using Helm:
+Tests connectivity to the GitLab server.
 
-```bash
-make deploy
-```
+Command:
 
-This uses the Helm chart located in:
-
-```
-app/python-auth-k8s
-```
+cd ansible && ansible -i inventory.ini gitlab -m ping
 
 ---
 
-### Full workflow
+# Typical Workflow
 
-A typical workflow for setting up the entire environment looks like this:
+A typical environment setup would be:
 
-```bash
-make infra
-make kubeconfig
-make install-nfs
-make install-gitlab
-make bootstrap-gitlab
+make infra  
+make config  
+make nfs  
+make cluster  
+make storage  
+make gitlab  
+make gitlab-bootstrap
 
-make push-gitlab GITLAB_IP=<gitlab-ip> GITLAB_TOKEN=<token>
-```
+Or using the combined target:
 
-After this step, the CI/CD pipeline automatically builds and pushes the Docker image.
-"""
+make all-k8s
 
-path = "/mnt/data/makefile_readme_section.md"
-pypandoc.convert_text(text, "md", format="md", outputfile=path, extra_args=["--standalone"])
+---
 
-path
+# Summary
+
+| Target | Purpose |
+|------|------|
+| infra | Provision infrastructure |
+| config | Configure Kubernetes nodes |
+| nfs | Install NFS server |
+| storage | Install NFS StorageClass |
+| cluster | Create Kubernetes cluster |
+| gitlab | Install GitLab |
+| gitlab-bootstrap | Configure GitLab |
+| push-gitlab | Push repositories |
+| test | Test Kubernetes nodes |
+| test-nfs | Test NFS server |
+| test-gitlab | Test GitLab |
+| destroy | Destroy infrastructure |
+| fmt | Format Terraform |
+| validate | Validate Terraform |
+
