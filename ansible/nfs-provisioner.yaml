@@ -1,0 +1,141 @@
+---
+- name: Install NFS provisioner in Kubernetes with Helm
+  hosts: k8s-cp1
+  become: true
+  gather_facts: true
+
+  vars:
+    helm_version: "v3.18.4"
+    nfs_server_ip: "172.31.1.20"
+    nfs_export_path: "/srv/nfs/k8s"
+
+  tasks:
+    - name: Ensure tar is installed
+      dnf:
+        name: tar
+        state: present
+
+    - name: Download Helm install script
+      get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get_helm.sh
+        mode: "0755"
+
+    - name: Install Helm
+      command: /tmp/get_helm.sh
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Create .kube directory for ec2-user
+      file:
+        path: /home/ec2-user/.kube
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0700"
+
+    - name: Copy kubeconfig for ec2-user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ec2-user/.kube/config
+        remote_src: true
+        owner: ec2-user
+        group: ec2-user
+        mode: "0600"
+
+    - name: Create directory for NFS Helm values
+      file:
+        path: /home/ec2-user/nfs
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+
+    - name: Write Helm values file for NFS provisioner
+      copy:
+        dest: /home/ec2-user/nfs/values.yaml
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+        content: |
+          nfs:
+            server: {{ nfs_server_ip }}
+            path: {{ nfs_export_path }}
+
+          storageClass:
+            create: true
+            name: nfs-client
+            defaultClass: false
+            reclaimPolicy: Retain
+            archiveOnDelete: false
+            accessModes: ReadWriteMany
+
+          replicaCount: 1
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+
+    - name: Add NFS provisioner Helm repo
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+        HOME: /home/ec2-user
+      command: helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
+      changed_when: false
+      failed_when: false
+
+    - name: Update Helm repos
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+        HOME: /home/ec2-user
+      command: helm repo update
+      changed_when: false
+
+    - name: Install or upgrade NFS provisioner
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+        HOME: /home/ec2-user
+      command: >
+        helm upgrade --install nfs-client
+        nfs-subdir-external-provisioner/nfs-subdir-external-provisioner
+        -f /home/ec2-user/nfs/values.yaml
+        --namespace nfs-provisioner
+        --create-namespace
+
+    - name: Wait for NFS provisioner pod
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+        HOME: /home/ec2-user
+      command: kubectl rollout status deployment/nfs-client-nfs-subdir-external-provisioner -n nfs-provisioner --timeout=300s
+      changed_when: false
+
+    - name: Show NFS provisioner pods
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+        HOME: /home/ec2-user
+      command: kubectl get pods -n nfs-provisioner
+      register: nfs_pods
+      changed_when: false
+
+    - name: Show StorageClass
+      become_user: ec2-user
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+        HOME: /home/ec2-user
+      command: kubectl get storageclass
+      register: storageclasses
+      changed_when: false
+
+    - name: Print NFS provisioner pods
+      debug:
+        var: nfs_pods.stdout_lines
+
+    - name: Print StorageClasses
+      debug:
+        var: storageclasses.stdout_lines

@@ -1,0 +1,108 @@
+---
+- name: Install and configure GitLab
+  hosts: gitlab
+  become: true
+  gather_facts: true
+
+  vars:
+    gitlab_external_url: "http://{{ hostvars[inventory_hostname].ansible_host }}"
+    gitlab_registry_url: "http://{{ hostvars[inventory_hostname].ansible_host }}:5050"
+    gitlab_root_email: "root@example.local"
+    gitlab_root_password: "GitlabAdmin123!"
+
+  tasks:
+    - name: Install GitLab dependencies
+      dnf:
+        name:
+          - policycoreutils-python-utils
+          - openssh-server
+          - perl
+          - postfix
+          - tar
+        state: present
+        update_cache: true
+
+    - name: Ensure sshd is enabled and started
+      systemd:
+        name: sshd
+        enabled: true
+        state: started
+
+    - name: Ensure postfix is enabled and started
+      systemd:
+        name: postfix
+        enabled: true
+        state: started
+
+    - name: Download GitLab repository setup script
+      get_url:
+        url: https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.rpm.sh
+        dest: /tmp/gitlab-script.rpm.sh
+        mode: "0755"
+
+    - name: Add GitLab package repository
+      command: bash /tmp/gitlab-script.rpm.sh
+      args:
+        creates: /etc/yum.repos.d/gitlab_gitlab-ce.repo
+
+    - name: Install GitLab CE with predefined root password
+      environment:
+        EXTERNAL_URL: "{{ gitlab_external_url }}"
+        GITLAB_ROOT_PASSWORD: "{{ gitlab_root_password }}"
+      dnf:
+        name: gitlab-ce
+        state: present
+        update_cache: true
+
+    - name: Configure initial root email
+      lineinfile:
+        path: /etc/gitlab/gitlab.rb
+        regexp: "^gitlab_rails\\['initial_root_email'\\]"
+        line: "gitlab_rails['initial_root_email'] = '{{ gitlab_root_email }}'"
+        insertafter: EOF
+
+    - name: Configure external URL explicitly
+      lineinfile:
+        path: /etc/gitlab/gitlab.rb
+        regexp: "^external_url "
+        line: "external_url '{{ gitlab_external_url }}'"
+
+    - name: Configure built-in container registry
+      blockinfile:
+        path: /etc/gitlab/gitlab.rb
+        marker: "# {mark} ANSIBLE GITLAB REGISTRY"
+        block: |
+          registry_external_url '{{ gitlab_registry_url }}'
+          gitlab_rails['registry_enabled'] = true
+
+    - name: Reconfigure GitLab
+      command: gitlab-ctl reconfigure
+      changed_when: true
+
+    - name: Wait for GitLab HTTP endpoint
+      uri:
+        url: "{{ gitlab_external_url }}"
+        method: GET
+        status_code: [200, 301, 302]
+        validate_certs: false
+      register: gitlab_http_check
+      retries: 30
+      delay: 10
+      until: gitlab_http_check.status in [200, 301, 302]
+
+    - name: Show GitLab service status
+      command: gitlab-ctl status
+      register: gitlab_status
+      changed_when: false
+
+    - name: Print GitLab status
+      debug:
+        var: gitlab_status.stdout_lines
+
+    - name: Print GitLab login details
+      debug:
+        msg:
+          - "GitLab URL: {{ gitlab_external_url }}"
+          - "GitLab Registry URL: {{ gitlab_registry_url }}"
+          - "GitLab username: root"
+          - "GitLab password: {{ gitlab_root_password }}"
