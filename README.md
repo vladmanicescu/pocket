@@ -21,17 +21,17 @@ The Makefile uses the following directories:
 
 | Variable | Path | Description |
 |--------|--------|--------|
-| TERRAFORM_DIR | terraform/ | Terraform infrastructure code |
-| ANSIBLE_DIR | ansible/ | Ansible playbooks and inventory |
+| TERRAFORM_DIR | providers/aws/vanilla/terraform/ | Terraform (AWS vanilla k8s) |
+| ANSIBLE_DIR | providers/aws/vanilla/ansible/ | Ansible playbooks and inventory |
 
 Important files:
 
 | Variable | File |
 |--------|--------|
-| INVENTORY | ansible/inventory.ini |
-| CONFIG_PLAYBOOK | ansible/playbook.yml |
-| NFS_PLAYBOOK | ansible/nfs.yaml |
-| CLUSTER_PLAYBOOK | ansible/k8s-cluster.yml |
+| INVENTORY | providers/aws/vanilla/ansible/inventory.ini |
+| CONFIG_PLAYBOOK | providers/aws/vanilla/ansible/playbook.yml |
+| NFS_PLAYBOOK | providers/aws/vanilla/ansible/nfs.yaml |
+| CLUSTER_PLAYBOOK | providers/aws/vanilla/ansible/k8s-cluster.yml |
 
 ---
 
@@ -48,8 +48,8 @@ Steps executed:
 
 Commands:
 
-cd terraform && terraform init  
-cd terraform && terraform apply -auto-approve
+cd providers/aws/vanilla/terraform && terraform init  
+cd providers/aws/vanilla/terraform && terraform apply -auto-approve
 
 ---
 
@@ -59,7 +59,7 @@ Destroys all Terraform-managed infrastructure.
 
 Command:
 
-cd terraform && terraform destroy -auto-approve
+cd providers/aws/vanilla/terraform && terraform destroy -auto-approve
 
 ---
 
@@ -69,7 +69,7 @@ Formats Terraform code according to standard conventions.
 
 Command:
 
-cd terraform && terraform fmt
+cd providers/aws/vanilla/terraform && terraform fmt
 
 ---
 
@@ -79,7 +79,7 @@ Validates Terraform configuration syntax.
 
 Command:
 
-cd terraform && terraform validate
+cd providers/aws/vanilla/terraform && terraform validate
 
 ---
 
@@ -91,7 +91,7 @@ Configures Kubernetes nodes using Ansible.
 
 Command:
 
-cd ansible && ansible-playbook -i inventory.ini playbook.yml
+cd providers/aws/vanilla/ansible && ansible-playbook -i inventory.ini playbook.yml
 
 Typical tasks include:
 
@@ -107,7 +107,7 @@ Configures the NFS server used for shared Kubernetes storage.
 
 Command:
 
-cd ansible && ansible-playbook -i inventory.ini nfs.yaml
+cd providers/aws/vanilla/ansible && ansible-playbook -i inventory.ini nfs.yaml
 
 ---
 
@@ -117,7 +117,7 @@ Installs a Kubernetes NFS dynamic storage provisioner using Helm.
 
 Command:
 
-cd ansible && ansible-playbook -i inventory.ini nfs-provisioner.yaml
+cd providers/aws/vanilla/ansible && ansible-playbook -i inventory.ini nfs-provisioner.yaml
 
 This creates a StorageClass that allows Kubernetes to dynamically provision volumes backed by NFS.
 
@@ -129,7 +129,7 @@ Creates the Kubernetes cluster.
 
 Command:
 
-cd ansible && ansible-playbook -i inventory.ini k8s-cluster.yml
+cd providers/aws/vanilla/ansible && ansible-playbook -i inventory.ini k8s-cluster.yml
 
 Typical actions:
 
@@ -147,7 +147,7 @@ Installs a GitLab server using Ansible.
 
 Command:
 
-cd ansible && ansible-playbook -i inventory.ini gitlab.yaml
+cd providers/aws/vanilla/ansible && ansible-playbook -i inventory.ini gitlab.yaml
 
 ---
 
@@ -157,7 +157,7 @@ Bootstraps GitLab after installation.
 
 Command:
 
-cd ansible && ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
+cd providers/aws/vanilla/ansible && ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
 
 Typical actions:
 
@@ -227,7 +227,7 @@ Tests connectivity to Kubernetes nodes using Ansible ping.
 
 Command:
 
-cd ansible && ansible -i inventory.ini k8s -m ping
+cd providers/aws/vanilla/ansible && ansible -i inventory.ini k8s -m ping
 
 ---
 
@@ -237,7 +237,7 @@ Tests connectivity to the NFS host.
 
 Command:
 
-cd ansible && ansible -i inventory.ini nfs -m ping
+cd providers/aws/vanilla/ansible && ansible -i inventory.ini nfs -m ping
 
 ---
 
@@ -247,7 +247,7 @@ Tests connectivity to the GitLab server.
 
 Command:
 
-cd ansible && ansible -i inventory.ini gitlab -m ping
+cd providers/aws/vanilla/ansible && ansible -i inventory.ini gitlab -m ping
 
 ---
 
@@ -293,6 +293,7 @@ make all-k8s
 # Infrastructure Provisioning
 
 ```bash
+cd providers/aws/vanilla/terraform
 terraform init
 terraform plan
 terraform apply
@@ -352,6 +353,7 @@ kubectl get storageclass
 # Install GitLab
 
 ```bash
+cd providers/aws/vanilla/ansible
 ansible-playbook -i inventory.ini gitlab.yaml
 ```
 
@@ -387,7 +389,8 @@ sudo gitlab-rails runner "puts User.pluck(:username)"
 # Bootstrap GitLab
 
 ```bash
-ansible-playbook gitlab-bootstrap.yaml
+cd providers/aws/vanilla/ansible
+ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
 ```
 
 Projects created:

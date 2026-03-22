@@ -1,5 +1,5 @@
-TERRAFORM_DIR=terraform
-ANSIBLE_DIR=ansible
+TERRAFORM_DIR=providers/aws/vanilla/terraform
+ANSIBLE_DIR=providers/aws/vanilla/ansible
 
 INVENTORY=$(ANSIBLE_DIR)/inventory.ini
 CONFIG_PLAYBOOK=$(ANSIBLE_DIR)/playbook.yml
@@ -27,11 +27,11 @@ storage:
 
 gitlab:
 	@echo "==> Installing GitLab server"
-	cd ansible && ansible-playbook -i inventory.ini gitlab.yaml
+	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini gitlab.yaml
 
 gitlab-bootstrap:
 	@echo "==> Bootstrapping GitLab projects and token"
-	cd ansible && ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
+	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini gitlab-bootstrap.yaml
 
 push-gitlab:
 	@echo "Usage: make push-gitlab GITLAB_IP=<ip> GITLAB_TOKEN=<token>"
@@ -56,7 +56,7 @@ test-nfs:
 
 test-gitlab:
 	@echo "==> Testing GitLab host connectivity"
-	cd ansible && ansible -i inventory.ini gitlab -m ping
+	cd $(ANSIBLE_DIR) && ansible -i inventory.ini gitlab -m ping
 
 destroy:
 	@echo "==> Destroying infrastructure"
