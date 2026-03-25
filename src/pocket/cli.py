@@ -17,8 +17,8 @@ import pathlib
 import click
 
 from pocket.config import ConfigError, load, PlatformConfig
-from pocket.backends import vanilla as vanilla_backend
-from pocket.backends import eks as eks_backend
+from pocket.backends.aws import vanilla as vanilla_backend
+from pocket.backends.aws import eks as eks_backend
 
 # Repo root is three levels above this file (src/pocket/cli.py → repo root)
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()

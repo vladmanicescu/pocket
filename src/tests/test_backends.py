@@ -28,9 +28,9 @@ import pathlib
 
 import pytest
 
-from pocket.backends import hcl
-from pocket.backends import vanilla as vanilla_backend
-from pocket.backends import eks as eks_backend
+from pocket.backends.aws import hcl
+from pocket.backends.aws import vanilla as vanilla_backend
+from pocket.backends.aws import eks as eks_backend
 from pocket.config import (
     AwsConfig, EksConfig, Kubernetes, Metadata, Network,
     PlatformConfig, PlatformServices, SecurityGroups,
