@@ -12,7 +12,7 @@ from pocket.backends.aws import hcl
 
 # Path to the tfvars file relative to the repo root
 _TFVARS_PATH = (
-    pathlib.Path(__file__).parent.parent.parent.parent
+    pathlib.Path(__file__).parent.parent.parent.parent.parent
     / "providers" / "aws" / "vanilla" / "terraform" / "terraform.tfvars"
 )
 

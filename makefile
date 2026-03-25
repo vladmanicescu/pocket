@@ -1,3 +1,5 @@
+PYTHON_VERSION=$(shell python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')")
+
 TERRAFORM_DIR=providers/aws/vanilla/terraform
 ANSIBLE_DIR=providers/aws/vanilla/ansible
 EKS_TERRAFORM_DIR=providers/aws/eks/terraform
@@ -7,7 +9,14 @@ CONFIG_PLAYBOOK=$(ANSIBLE_DIR)/playbook.yml
 NFS_PLAYBOOK=$(ANSIBLE_DIR)/nfs.yaml
 CLUSTER_PLAYBOOK=$(ANSIBLE_DIR)/k8s-cluster.yml
 
-.PHONY: infra config nfs cluster config-infra all-k8s test test-nfs destroy fmt validate infra-eks destroy-eks fmt-eks validate-eks
+.PHONY: dev-setup infra config nfs cluster config-infra all-k8s test test-nfs destroy fmt validate infra-eks destroy-eks fmt-eks validate-eks
+
+dev-setup:
+	@echo "==> Creating virtualenv and installing pocket"
+	uv venv
+	uv pip install -e ".[dev]"
+	@echo "$(PWD)/src" > .venv/lib/$(PYTHON_VERSION)/site-packages/pocket-path.pth
+	@echo "==> Done. Run: source .venv/bin/activate"
 
 infra:
 	@echo "==> Provisioning infrastructure with Terraform"

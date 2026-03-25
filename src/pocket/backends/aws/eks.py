@@ -11,7 +11,7 @@ from pocket.config import PlatformConfig
 from pocket.backends.aws import hcl
 
 _TFVARS_PATH = (
-    pathlib.Path(__file__).parent.parent.parent.parent
+    pathlib.Path(__file__).parent.parent.parent.parent.parent
     / "providers" / "aws" / "eks" / "terraform" / "terraform.tfvars"
 )
 
