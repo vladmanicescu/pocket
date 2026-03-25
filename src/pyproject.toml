@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "pocket"
@@ -18,6 +18,12 @@ dependencies = [
 [project.scripts]
 pocket = "pocket.cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.1"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pocket*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
