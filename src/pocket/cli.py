@@ -23,6 +23,16 @@ from pocket.backends.aws import eks as eks_backend
 # Repo root is three levels above this file (src/pocket/cli.py → repo root)
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
+_EXAMPLES_DIR = (
+    pathlib.Path(__file__).parent.parent.parent
+    / "platform" / "schema" / "v1" / "examples"
+)
+
+_BACKEND_EXAMPLES = {
+    "vanilla": _EXAMPLES_DIR / "aws-vanilla.yaml",
+    "eks":     _EXAMPLES_DIR / "aws-eks.yaml",
+}
+
 _MAKE_TARGETS = {
     "vanilla": {
         "apply":   "infra",
@@ -52,6 +62,55 @@ def main(ctx: click.Context, config: pathlib.Path) -> None:
     """pocket — materialise Terraform and Ansible configs from platform.yaml."""
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
+
+
+# ---------------------------------------------------------------------------
+# init
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.option(
+    "--backend", "-b",
+    type=click.Choice(["vanilla", "eks"], case_sensitive=False),
+    default="eks",
+    show_default=True,
+    help="Which backend example to use as the starting point.",
+)
+@click.option(
+    "--output", "-o",
+    default="platform.yaml",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=pathlib.Path),
+    help="Destination file to write.",
+)
+@click.option(
+    "--force", "-f",
+    is_flag=True,
+    default=False,
+    help="Overwrite the output file if it already exists.",
+)
+def init(backend: str, output: pathlib.Path, force: bool) -> None:
+    """Scaffold a platform.yaml from the built-in example for the chosen backend."""
+    example = _BACKEND_EXAMPLES[backend]
+
+    if not example.exists():
+        click.echo(
+            click.style(f"✗ Example file not found: {example}", fg="red"), err=True
+        )
+        sys.exit(1)
+
+    if output.exists() and not force:
+        click.echo(
+            click.style(f"✗ {output} already exists. Use --force to overwrite.", fg="red"),
+            err=True,
+        )
+        sys.exit(1)
+
+    output.write_text(example.read_text())
+    click.echo(
+        click.style(f"✓ Written {output}", fg="green")
+        + f"  (backend={backend} — edit before running apply)"
+    )
 
 
 # ---------------------------------------------------------------------------
