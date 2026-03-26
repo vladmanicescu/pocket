@@ -1,5 +1,5 @@
 
-# devops_assignment (pocket)
+# Pocket
 
 **pocket** is a small CLI plus Terraform layouts to provision **AWS EKS** (or vanilla EC2-based Kubernetes), optional **HashiCorp Vault**, **External Secrets**, **GitLab** (Helm), and related pieces from a single **`platform.yaml`**.
 
