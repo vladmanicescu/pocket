@@ -6,12 +6,44 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.0"
+    }
+  }
+}
+
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.aws_region, "--profile", var.aws_profile]
   }
 }
 
 provider "aws" {
   region  = var.aws_region
   profile = var.aws_profile
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.aws_region, "--profile", var.aws_profile]
+    }
+  }
 }
 
 data "aws_availability_zones" "available" {
@@ -73,6 +105,13 @@ module "eks" {
 
   enable_cluster_creator_admin_permissions = true
 
+  cluster_addons = {
+    aws-ebs-csi-driver = {
+      most_recent              = true
+      service_account_role_arn = module.ebs_csi_irsa.iam_role_arn
+    }
+  }
+
   eks_managed_node_groups = {
     default = {
       name = "default"
@@ -90,5 +129,46 @@ module "eks" {
 
   tags = {
     Project = var.project_name
+  }
+}
+
+# IAM role for the EBS CSI driver (IRSA)
+module "ebs_csi_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name             = "${var.cluster_name}-ebs-csi"
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"]
+    }
+  }
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+# gp3 StorageClass using the EBS CSI driver — set as default
+resource "kubernetes_storage_class" "gp3" {
+  depends_on = [module.eks, module.ebs_csi_irsa]
+
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  volume_binding_mode    = "WaitForFirstConsumer"
+  allow_volume_expansion = true
+
+  parameters = {
+    type      = "gp3"
+    encrypted = "true"
   }
 }

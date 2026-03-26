@@ -91,11 +91,7 @@
               "properties": {
                 "key_name": { "type": "string", "description": "EC2 key pair name (may be generated)." },
                 "instance_type": { "type": "string" },
-                "allowed_ssh_cidrs": {
-                  "type": "array",
-                  "items": { "type": "string" },
-                  "description": "CIDRs allowed for SSH, API, HTTP/S to public endpoints."
-                },
+                "security_groups": { "$ref": "#/$defs/vanillaSecurityGroups" },
                 "nodes": {
                   "type": "array",
                   "items": { "$ref": "#/$defs/awsVanillaNode" },
@@ -157,6 +153,26 @@
             "default_storage_class": { "type": "string", "description": "StorageClass name apps should use." }
           }
         },
+        "vault": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "HashiCorp Vault on EKS (KMS auto-unseal + IRSA). Provisioned via the same Terraform stack as the cluster; use pocket vault install.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Provision Vault (KMS key, IAM role, Helm). Default true when omitted."
+            },
+            "replicas": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Vault StatefulSet replicas (Raft). Default 1 in Terraform."
+            },
+            "data_storage_size": {
+              "type": "string",
+              "description": "PVC size for Raft data, e.g. 10Gi."
+            }
+          }
+        },
         "gitlab": {
           "type": "object",
           "additionalProperties": false,
@@ -166,6 +182,36 @@
               "type": "string",
               "enum": ["omnibus_vm", "helm", "external"],
               "description": "omnibus_vm=Ansible on dedicated EC2; helm=in-cluster; external=use existing URL only."
+            },
+            "hostname": {
+              "type": "string",
+              "description": "GitLab hostname (e.g. gitlab.example.com). Omit to use the NLB auto-hostname (no domain required)."
+            },
+            "tls": {
+              "type": "boolean",
+              "description": "Enable TLS via cert-manager. Mode is controlled by tls_mode."
+            },
+            "tls_mode": {
+              "type": "string",
+              "enum": ["letsencrypt", "self_signed"],
+              "description": "letsencrypt (default) = Let's Encrypt via HTTP-01, requires hostname + DNS. self_signed = cert-manager issues a local CA cert, works with any hostname including NLB auto-hostname."
+            },
+            "route53_zone_id": {
+              "type": "string",
+              "description": "Route 53 hosted zone ID (e.g. Z1234567890ABC). When set, pocket will automatically create/update the CNAME record for hostname → NLB. Requires hostname to be set."
+            },
+            "runner": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "GitLab Runner configuration — runs CI jobs as pods inside the EKS cluster.",
+              "properties": {
+                "enabled": { "type": "boolean", "description": "Install the GitLab Runner. Defaults to true when gitlab is enabled." },
+                "concurrent": { "type": "integer", "minimum": 1, "description": "Maximum number of jobs that can run simultaneously." },
+                "job_cpu_request":    { "type": "string", "description": "CPU request per job pod, e.g. 100m." },
+                "job_memory_request": { "type": "string", "description": "Memory request per job pod, e.g. 128Mi." },
+                "job_cpu_limit":      { "type": "string", "description": "CPU limit per job pod, e.g. 500m." },
+                "job_memory_limit":   { "type": "string", "description": "Memory limit per job pod, e.g. 512Mi." }
+              }
             },
             "bootstrap": {
               "type": "object",
@@ -200,6 +246,28 @@
     }
   },
   "$defs": {
+    "vanillaSecurityGroups": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "CIDRs applied to each security-group rule; omit a key to keep the Terraform default.",
+      "properties": {
+        "ssh_cidrs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "CIDRs allowed on port 22 (SSH to all nodes)."
+        },
+        "k8s_api_cidrs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "CIDRs allowed on port 6443 (Kubernetes API server)."
+        },
+        "http_cidrs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "CIDRs allowed on ports 80 and 443 (ingress / GitLab web)."
+        }
+      }
+    },
     "awsVanillaNode": {
       "type": "object",
       "additionalProperties": false,

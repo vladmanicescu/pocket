@@ -25,8 +25,13 @@ kubernetes:
     vanilla:
       key_name: k8s-pocket-key
       instance_type: t3.medium
-      allowed_ssh_cidrs:
-        - 0.0.0.0/0
+      security_groups:
+        ssh_cidrs:
+          - 0.0.0.0/0
+        k8s_api_cidrs:
+          - 0.0.0.0/0
+        http_cidrs:
+          - 0.0.0.0/0
       nodes:
         - name: k8s-cp1
           hostname: k8s-cp1

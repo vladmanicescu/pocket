@@ -19,3 +19,8 @@ node_desired_size   = 2
 node_min_size       = 1
 node_max_size       = 4
 node_disk_size      = 50
+
+# Vault (KMS auto-unseal + Helm) — optional overrides (also driven by platform.yaml / pocket)
+# vault_enabled           = true
+# vault_replicas          = 1
+# vault_data_storage_size = "10Gi"

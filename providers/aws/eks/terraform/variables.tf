@@ -84,3 +84,21 @@ variable "node_disk_size" {
   description = "Root volume size (GiB) for managed nodes"
   default     = 50
 }
+
+variable "vault_enabled" {
+  type        = bool
+  description = "Provision Vault (KMS + IRSA + Helm). Set via platform.yaml / pocket."
+  default     = true
+}
+
+variable "vault_replicas" {
+  type        = number
+  description = "Vault server replicas (Raft). Use 3+ for production HA; 1 is fine for lab."
+  default     = 1
+}
+
+variable "vault_data_storage_size" {
+  type        = string
+  description = "PVC size for Vault Raft data (gp3)"
+  default     = "10Gi"
+}
