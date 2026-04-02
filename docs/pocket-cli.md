@@ -85,6 +85,7 @@ Requires `kubernetes.backend: eks` and `platform.gitlab.enabled: true` with `ins
 |---------|------------|
 | `pocket gitlab install` | Install nginx ingress (NLB), optional TLS, then GitLab via Helm (long-running). |
 | `pocket gitlab url` | Print the GitLab base URL. |
+| `pocket gitlab register-runner` | After GitLab is up: try **legacy** instance registration token via Rails (toolbox); if empty (common on GitLab 17+), use **`--token` / `GITLAB_PERSONAL_ACCESS_TOKEN`** (PAT with `api` scope) to call `POST /api/v4/runners`, patch `gitlab-gitlab-runner-secret`, restart the runner Deployment. Use **`--insecure`** if GitLab uses a self-signed cert. Put **`--config`** on **`pocket`**, not after `register-runner`: `pocket -c platform.yaml gitlab register-runner`. |
 | `pocket gitlab uninstall` | Confirm, then remove GitLab and related Helm releases (ingress / cert-manager as implemented). |
 
 **Note:** GitLab on the **vanilla** stack is **not** handled by `pocket gitlab`; use Ansible targets such as `make gitlab` (see the main [README](../README.md)).

@@ -31,8 +31,9 @@ import pytest
 from pocket.backends.aws import hcl
 from pocket.backends.aws import vanilla as vanilla_backend
 from pocket.backends.aws import eks as eks_backend
+from pocket.backends.aws import gitlab as gitlab_backend
 from pocket.config import (
-    AwsConfig, EksConfig, Kubernetes, Metadata, Network,
+    AwsConfig, EksConfig, GitLab, GitLabRunner, Kubernetes, Metadata, Network,
     PlatformConfig, PlatformServices, SecurityGroups, Vault,
     VanillaConfig, VanillaNode, NfsHost, GitLabHost,
 )
@@ -338,3 +339,31 @@ class TestEksRender:
         assert returned == dest
         assert dest.exists()
         assert "aws_region" in dest.read_text()
+
+
+class TestGitLabHelmRunnerValues:
+    """gitlab._build_runner_values — chart expectations for runner Secret + auth workflow."""
+
+    def _eks_with_gitlab(self, gl: GitLab) -> PlatformConfig:
+        aws = AwsConfig(region="eu-central-1", eks=EksConfig(cluster_name="c"))
+        return PlatformConfig(
+            apiVersion="platform.dev/v1",
+            kind="PlatformConfig",
+            metadata=Metadata(name="t"),
+            provider="aws",
+            kubernetes=Kubernetes(backend="eks", version="1.31", aws=aws),
+            platform=PlatformServices(gitlab=gl),
+        )
+
+    def test_runner_enabled_has_secret_nonempty_and_locked_null(self):
+        gl = GitLab(enabled=True, install_mode="helm", runner=GitLabRunner(enabled=True))
+        rv = gitlab_backend._build_runner_values(gl)
+        assert rv["install"] is True
+        assert rv["runners"]["secret"] == "nonempty"
+        assert rv["runners"]["locked"] is None
+        assert "[[runners]]" in rv["runners"]["config"]
+
+    def test_runner_disabled_skips_install(self):
+        gl = GitLab(enabled=True, install_mode="helm", runner=GitLabRunner(enabled=False))
+        rv = gitlab_backend._build_runner_values(gl)
+        assert rv == {"install": False}

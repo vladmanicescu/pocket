@@ -7,6 +7,7 @@ Usage:
     pocket --config platform.yaml apply [--run]
     pocket --config platform.yaml destroy
     pocket --config platform.yaml vault plan|install|init|token|status|bootstrap|port-forward
+    pocket --config platform.yaml gitlab install|url|uninstall|register-runner
 """
 
 from __future__ import annotations
@@ -221,6 +222,15 @@ def destroy(ctx: click.Context) -> None:
     click.echo(click.style(f"✓ Wrote {dest}", fg="green"))
 
     if cfg.kubernetes.backend == "eks":
+        gl = cfg.platform.gitlab
+        if gl and gl.enabled and gl.install_mode == "helm":
+            click.echo(
+                click.style(
+                    "==> Helm uninstall (GitLab, ingress, cert-manager) — frees NLBs before destroy",
+                    fg="cyan",
+                )
+            )
+            gitlab_backend.uninstall(cfg, best_effort=True)
         click.echo(click.style("==> terraform destroy (EKS stack)", fg="cyan"))
         eks_backend.run_terraform_destroy()
     else:
@@ -268,6 +278,42 @@ def gitlab_uninstall(ctx: click.Context) -> None:
     """Uninstall GitLab and the ingress controller from the cluster."""
     cfg = _load_or_exit(ctx)
     gitlab_backend.uninstall(cfg)
+
+
+@gitlab.command("register-runner")
+@click.option(
+    "--token",
+    "personal_access_token",
+    envvar="GITLAB_PERSONAL_ACCESS_TOKEN",
+    default=None,
+    help="Personal access token with api scope (when legacy registration tokens are disabled).",
+)
+@click.option(
+    "--insecure",
+    "insecure_tls",
+    is_flag=True,
+    default=False,
+    help="Skip TLS verification for the GitLab API (self-signed HTTPS).",
+)
+@click.pass_context
+def gitlab_register_runner(
+    ctx: click.Context,
+    personal_access_token: str | None,
+    insecure_tls: bool,
+) -> None:
+    """Patch the runner Secret (legacy token from Rails, or API + PAT) and restart the runner."""
+    cfg = _load_or_exit(ctx)
+    if cfg.kubernetes.backend != "eks":
+        click.echo(
+            click.style("✗ 'pocket gitlab register-runner' only supports the eks backend.", fg="red"),
+            err=True,
+        )
+        sys.exit(1)
+    gitlab_backend.register_runner(
+        cfg,
+        personal_access_token=personal_access_token,
+        insecure_tls=insecure_tls,
+    )
 
 
 # ---------------------------------------------------------------------------
