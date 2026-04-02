@@ -9,6 +9,10 @@
 
 EKS-focused docs: [`providers/aws/eks/README.md`](providers/aws/eks/README.md).
 
+**pocket commands:** [`docs/pocket-cli.md`](docs/pocket-cli.md).
+
+**Local CLI:** `make dev-setup`, then `source .venv/bin/activate` — **`pocket`** is on your PATH like any other tool. Details: [`docs/pocket-cli.md`](docs/pocket-cli.md).
+
 ---
 
 # Makefile Targets Documentation

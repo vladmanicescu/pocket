@@ -18,10 +18,16 @@ Two modes driven by platform.yaml:
 from __future__ import annotations
 
 import base64
+import json
+import os
 import shlex
+import ssl
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
 import yaml
@@ -41,6 +47,10 @@ GITLAB_REPO          = "https://charts.gitlab.io"
 INGRESS_NAMESPACE    = "ingress-nginx"
 CERT_MANAGER_NS      = "cert-manager"
 GITLAB_NAMESPACE     = "gitlab"
+
+# Helm release name used by pocket gitlab install (must match secret/deployment names).
+GITLAB_HELM_RELEASE = "gitlab"
+RUNNER_SECRET_NAME = f"{GITLAB_HELM_RELEASE}-gitlab-runner-secret"
 
 CERT_MANAGER_VERSION  = "v1.14.5"
 LETSENCRYPT_EMAIL     = "admin@example.com"   # overridden by config if added later
@@ -121,17 +131,44 @@ def install(cfg: PlatformConfig) -> None:
     _print_access_info(cfg, domain)
     if gl.effective_tls and gl.effective_tls_mode == "self_signed":
         _print_ca_cert()
+    if gl.runner and gl.runner.enabled is not False:
+        _echo("")
+        _echo(
+            "Runner: register the in-cluster runner when GitLab is ready — "
+            "`pocket --config platform.yaml gitlab register-runner` "
+            "(legacy token from Rails, or `--token` / GITLAB_PERSONAL_ACCESS_TOKEN for API)."
+        )
 
 
-def uninstall(cfg: PlatformConfig) -> None:
-    """Remove GitLab and ingress controller from the cluster."""
+def uninstall(cfg: PlatformConfig, *, best_effort: bool = False) -> None:
+    """Remove GitLab and ingress controller from the cluster.
+
+    If ``best_effort`` is True (e.g. before ``terraform destroy``), failures to
+    refresh kubeconfig or uninstall a release are logged and do not exit the process.
+    """
     aws   = cfg.kubernetes.aws
     eks   = aws.eks if aws else None
     region       = aws.region if aws else "eu-central-1"
     cluster_name = eks.cluster_name if eks else "pocket-eks"
 
-    _run(["aws", "eks", "update-kubeconfig",
-          "--region", region, "--name", cluster_name])
+    kube = subprocess.run(
+        ["aws", "eks", "update-kubeconfig",
+         "--region", region, "--name", cluster_name],
+        capture_output=True,
+        text=True,
+    )
+    if kube.returncode != 0:
+        err = (kube.stderr or kube.stdout or "").strip()
+        if best_effort:
+            _echo(
+                "⚠  Skipping Helm uninstall (kubeconfig not updated). "
+                + (err or f"exit {kube.returncode}"),
+                error=False,
+            )
+            return
+        if err:
+            _echo(err, error=True)
+        sys.exit(kube.returncode)
 
     for release, ns in [
         ("gitlab",        GITLAB_NAMESPACE),
@@ -143,8 +180,10 @@ def uninstall(cfg: PlatformConfig) -> None:
             ["helm", "uninstall", release, "-n", ns],
             capture_output=True, text=True,
         )
-        if result.returncode != 0 and "not found" not in result.stderr:
-            _echo(result.stderr.strip())
+        if result.returncode != 0 and "not found" not in (result.stderr or ""):
+            msg = (result.stderr or result.stdout or "").strip()
+            if msg:
+                _echo(msg)
 
 
 def get_url(cfg: PlatformConfig) -> str:
@@ -159,6 +198,87 @@ def get_url(cfg: PlatformConfig) -> str:
     if not nlb:
         return "(NLB address not yet assigned — try again in a minute)"
     return f"http://{nlb}"
+
+
+def register_runner(
+    cfg: PlatformConfig,
+    *,
+    personal_access_token: str | None = None,
+    insecure_tls: bool = False,
+) -> None:
+    """Register the in-cluster GitLab Runner: update the runner Secret and restart the Deployment.
+
+    **Path 1 (legacy):** reads the instance registration token from Rails via the toolbox pod
+    and patches ``runner-registration-token`` (works when Admin allows registration tokens).
+
+    **Path 2 (modern):** with ``personal_access_token`` (or env ``GITLAB_PERSONAL_ACCESS_TOKEN``),
+    calls ``POST /api/v4/runners`` and patches ``runner-token`` (``glrt-…``).
+    """
+    gl = cfg.platform.gitlab
+    if not gl or not gl.enabled or gl.install_mode != "helm":
+        _echo("✗ GitLab must be enabled with install_mode: helm.", error=True)
+        sys.exit(1)
+    if gl.runner and gl.runner.enabled is False:
+        _echo("✗ Runner is disabled in platform.yaml.", error=True)
+        sys.exit(1)
+
+    pat = (personal_access_token or os.environ.get("GITLAB_PERSONAL_ACCESS_TOKEN") or "").strip()
+
+    _sync_kubeconfig_from_cfg(cfg)
+    tb = _toolbox_deploy_name()
+    _echo(f"==> Waiting for toolbox deployment/{tb}")
+    st = subprocess.run(
+        ["kubectl", "rollout", "status", f"deployment/{tb}", "-n", GITLAB_NAMESPACE, "--timeout=300s"],
+        capture_output=True,
+        text=True,
+    )
+    if st.returncode != 0:
+        err = (st.stderr or st.stdout or "").strip()
+        _echo(f"✗ Toolbox not ready: {err or st.returncode}", error=True)
+        sys.exit(1)
+
+    # --- Path 1: legacy registration token from Rails ---
+    reg = _rails_legacy_registration_token(tb)
+    if reg:
+        _echo("==> Using legacy instance registration token from GitLab Rails")
+        _patch_runner_secret({"runner-registration-token": reg})
+        _restart_gitlab_runner_deployment()
+        _echo("✓ Runner secret updated (runner-registration-token). Check Admin → CI/CD → Runners.")
+        return
+
+    # --- Path 2: API with PAT ---
+    if not pat:
+        _echo(
+            "✗ No legacy registration token (often disabled on GitLab 17+). "
+            "Create a Personal Access Token with **api** scope, then:",
+            error=True,
+        )
+        _echo(
+            "    pocket --config platform.yaml gitlab register-runner --token glpat-…\n"
+            "    # or: export GITLAB_PERSONAL_ACCESS_TOKEN=glpat-…",
+            error=True,
+        )
+        _echo(
+            "Admin → Settings → CI/CD → Runner registration may need enabling for the legacy path.",
+            error=True,
+        )
+        sys.exit(1)
+
+    base = get_url(cfg)
+    if not (base.startswith("http://") or base.startswith("https://")):
+        _echo(f"✗ GitLab URL not usable for API: {base}", error=True)
+        sys.exit(1)
+
+    _echo("==> Creating instance runner via GitLab API (authentication token)")
+    try:
+        auth_token = _api_create_instance_runner_token(base, pat, insecure=insecure_tls)
+    except Exception as exc:
+        _echo(f"✗ API error: {exc}", error=True)
+        sys.exit(1)
+
+    _patch_runner_secret({"runner-token": auth_token})
+    _restart_gitlab_runner_deployment()
+    _echo("✓ Runner secret updated (runner-token). Check Admin → CI/CD → Runners.")
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +312,15 @@ def _build_runner_values(gl: Any) -> dict[str, Any]:
         f'    memory_limit = "{mem_lim}"\n'
     )
 
+    # `secret: nonempty` is required so the GitLab umbrella chart renders the runner Secret
+    # template. `locked: null` matches the new runner auth workflow (GitLab 16+).
     return {
         "install": True,
         "concurrent": concurrent,
         "runners": {
+            "secret": "nonempty",
             "executor": "kubernetes",
-            "locked": False,
+            "locked": None,
             "tags": "",
             "config": runner_config,
         },
@@ -262,6 +385,153 @@ def _build_helm_values(cfg: PlatformConfig, domain: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _sync_kubeconfig_from_cfg(cfg: PlatformConfig) -> None:
+    aws = cfg.kubernetes.aws
+    eks = aws.eks if aws else None
+    region = aws.region if aws else "eu-central-1"
+    name = eks.cluster_name if eks else "pocket-eks"
+    cmd = ["aws", "eks", "update-kubeconfig", "--region", region, "--name", name]
+    if aws and aws.profile:
+        cmd += ["--profile", aws.profile]
+    _run(cmd)
+
+
+def _toolbox_deploy_name() -> str:
+    r = subprocess.run(
+        [
+            "kubectl",
+            "get",
+            "deploy",
+            "-n",
+            GITLAB_NAMESPACE,
+            "-o",
+            'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    for name in (r.stdout or "").strip().splitlines():
+        if "toolbox" in name.lower():
+            return name
+    return "gitlab-toolbox"
+
+
+def _rails_legacy_registration_token(toolbox_deploy: str) -> str:
+    """Return non-empty legacy registration token, or empty string."""
+    ruby = "puts ApplicationSetting.current.runners_registration_token.to_s.strip"
+    proc = subprocess.run(
+        [
+            "kubectl",
+            "exec",
+            "-n",
+            GITLAB_NAMESPACE,
+            f"deployment/{toolbox_deploy}",
+            "--",
+            "gitlab-rails",
+            "runner",
+            ruby,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        if err:
+            _echo(f"⚠  Could not read registration token from Rails: {err}", error=False)
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def _api_create_instance_runner_token(gitlab_base_url: str, pat: str, *, insecure: bool) -> str:
+    url = gitlab_base_url.rstrip("/") + "/api/v4/runners"
+    body = urllib.parse.urlencode(
+        {
+            "runner_type": "instance_type",
+            "description": "pocket-eks-kubernetes",
+        }
+    ).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("PRIVATE-TOKEN", pat)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    ctx: ssl.SSLContext | None = None
+    if insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}") from e
+    token = (payload.get("token") or "").strip()
+    if not token:
+        raise RuntimeError(f"API response missing token: {payload!r}")
+    return token
+
+
+def _patch_runner_secret(string_data: dict[str, str]) -> None:
+    patch = {"stringData": string_data}
+    proc = subprocess.run(
+        [
+            "kubectl",
+            "patch",
+            "secret",
+            RUNNER_SECRET_NAME,
+            "-n",
+            GITLAB_NAMESPACE,
+            "-p",
+            json.dumps(patch),
+            "--type=merge",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        _echo(f"✗ kubectl patch secret failed: {err or proc.returncode}", error=True)
+        sys.exit(1)
+
+
+def _restart_gitlab_runner_deployment() -> None:
+    r = subprocess.run(
+        [
+            "kubectl",
+            "get",
+            "deploy",
+            "-n",
+            GITLAB_NAMESPACE,
+            "-o",
+            'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    names = [n for n in (r.stdout or "").strip().splitlines() if n]
+    target = ""
+    for name in names:
+        if "gitlab-runner" in name and "cache" not in name.lower():
+            target = name
+            break
+    if not target:
+        for name in names:
+            if name.endswith("gitlab-runner") or name == f"{GITLAB_HELM_RELEASE}-gitlab-runner":
+                target = name
+                break
+    if not target:
+        target = f"{GITLAB_HELM_RELEASE}-gitlab-runner"
+    _echo(f"==> Restarting deployment/{target}")
+    subprocess.run(
+        ["kubectl", "rollout", "restart", f"deployment/{target}", "-n", GITLAB_NAMESPACE],
+        check=True,
+    )
+    subprocess.run(
+        ["kubectl", "rollout", "status", f"deployment/{target}", "-n", GITLAB_NAMESPACE, "--timeout=300s"],
+        check=False,
+    )
+
 
 def _install_cert_manager() -> None:
     _echo("==> Installing cert-manager")
