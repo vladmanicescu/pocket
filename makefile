@@ -1,7 +1,5 @@
-PYTHON_VERSION=$(shell python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')")
-
-# pocket CLI (after: make dev-setup && source .venv/bin/activate)
-POCKET ?= .venv/bin/pocket
+# pocket CLI — bin/pocket bootstraps .venv if needed; interactive use: source .venv/bin/activate && pocket …
+POCKET ?= bin/pocket
 
 TERRAFORM_DIR=providers/aws/vanilla/terraform
 ANSIBLE_DIR=providers/aws/vanilla/ansible
@@ -15,11 +13,20 @@ CLUSTER_PLAYBOOK=$(ANSIBLE_DIR)/k8s-cluster.yml
 .PHONY: dev-setup infra config nfs cluster config-infra all-k8s test test-nfs destroy fmt validate infra-eks destroy-eks fmt-eks validate-eks
 
 dev-setup:
-	@echo "==> Creating virtualenv and installing pocket"
-	uv venv
+	@echo "==> Ensuring virtualenv and installing pocket"
+	@if [ -f .venv/bin/python ]; then \
+		echo "    (existing .venv)"; \
+	else \
+		echo "    (creating .venv)"; \
+		if [ -d .venv ]; then rm -rf .venv; fi; \
+		uv venv; \
+	fi
 	uv pip install -e ".[dev]"
-	@echo "$(PWD)/src" > .venv/lib/$(PYTHON_VERSION)/site-packages/pocket-path.pth
-	@echo "==> Done. Run: source .venv/bin/activate"
+	@PURELIB=$$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))") && \
+		echo "$(CURDIR)/src" > "$$PURELIB/pocket-path.pth"
+	@cp "$(CURDIR)/scripts/pocket-venv-launcher.sh" "$(CURDIR)/.venv/bin/pocket"
+	@chmod +x "$(CURDIR)/.venv/bin/pocket"
+	@echo "==> Done. Run: source .venv/bin/activate   then: pocket <command>"
 
 infra:
 	@echo "==> Provisioning infrastructure with Terraform"
@@ -92,11 +99,9 @@ infra-eks:
 	cd $(EKS_TERRAFORM_DIR) && terraform apply -auto-approve
 
 destroy-eks:
-	@echo "==> Writing terraform.tfvars from platform.yaml (must match the stack you destroy)"
+	@echo "==> Destroy EKS stack (writes tfvars, Helm uninstall if GitLab/helm, then terraform destroy)"
 	@test -x $(POCKET) || (echo "Run: make dev-setup" && exit 1)
-	$(POCKET) apply --config platform.yaml
-	@echo "==> Destroying EKS stack"
-	cd $(EKS_TERRAFORM_DIR) && terraform destroy -auto-approve
+	$(POCKET) destroy --config platform.yaml --yes
 
 fmt-eks:
 	@echo "==> Formatting EKS Terraform"

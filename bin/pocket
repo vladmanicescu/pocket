@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Bootstrap .venv if missing, then run CLI (for Make / CI without activation).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+PY="$ROOT/.venv/bin/python"
+if [[ ! -f "$PY" ]]; then
+  echo "==> No .venv yet — running make dev-setup …" >&2
+  make dev-setup
+fi
+export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+exec "$PY" -m pocket "$@"

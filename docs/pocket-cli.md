@@ -8,27 +8,21 @@ For EKS, Vault, and External Secrets in more detail, see [providers/aws/eks/READ
 
 ## Install and run
 
-From the repository root:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .
-```
-
-Alternative (uses `uv`):
+One-time setup from the **repository root**:
 
 ```bash
 make dev-setup
-source .venv/bin/activate
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
 ```
 
-Scaffold a starter config:
+After that, **`pocket`** is a normal command (it lives in `.venv/bin`). You do not need `./pocket` or a repo-relative path.
 
 ```bash
+pocket validate
 pocket init --backend eks -o platform.yaml
-# or: pocket init --backend vanilla -o platform.yaml
 ```
+
+**Makefile targets** that call **`POCKET`** use **`bin/pocket`**, which runs **`make dev-setup`** automatically if `.venv` is missing (so CI/Make does not require activation). Day-to-day use: activate the venv and run **`pocket`** as above.
 
 ---
 
@@ -55,7 +49,7 @@ pocket -c platform.yaml apply --run
 | `pocket plan` | Dry-run: show what would be written to `terraform.tfvars` (no disk write). |
 | `pocket apply` | Render and write `terraform.tfvars` for the active backend (`providers/aws/eks/terraform` for EKS). |
 | `pocket apply --run` | After writing tfvars: **EKS** — `terraform init` and `terraform apply` in the EKS Terraform directory. **Vanilla** — runs `make infra`. |
-| `pocket destroy` | Prompt for confirmation, write tfvars, then **EKS** — `terraform destroy`; **Vanilla** — `make destroy`. |
+| `pocket destroy` | Prompt for confirmation (`--yes` to skip), write tfvars, then **EKS** — if GitLab `install_mode: helm`, best-effort Helm uninstall (GitLab, ingress, cert-manager) so load balancers release, then `terraform destroy`; **Vanilla** — `make destroy`. |
 
 ---
 
@@ -99,13 +93,13 @@ Requires `kubernetes.backend: eks` and `platform.gitlab.enabled: true` with `ins
 
 ## Makefile targets (EKS + pocket)
 
-From the repo root, with `.venv` set up and `pocket` at `.venv/bin/pocket` (or `POCKET` overridden):
+From the repo root, with **`make dev-setup`** done and (for interactive use) **`source .venv/bin/activate`**:
 
 | Target | Description |
 |--------|------------|
 | `make dev-setup` | Create venv and `pip install -e ".[dev]"`. |
 | `make infra-eks` | `pocket apply --config platform.yaml`, then `terraform init` and `terraform apply` under `providers/aws/eks/terraform`. |
-| `make destroy-eks` | `pocket apply --config platform.yaml`, then `terraform destroy` in the EKS directory. |
+| `make destroy-eks` | `pocket destroy --config platform.yaml --yes` (same flow as `pocket destroy`, non-interactive). |
 | `make fmt-eks` | `terraform fmt -recursive` in the EKS Terraform directory. |
 | `make validate-eks` | `terraform validate` in the EKS Terraform directory. |
 
